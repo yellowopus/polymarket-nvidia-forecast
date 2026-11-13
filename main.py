@@ -11,6 +11,8 @@
 #    reversion.
 # Deterministic: no randomness anywhere.
 
+"""EWMA sigma uses a 240-minute half-life to track slow volatility drift."""
+
 import json
 import math
 import os
@@ -22,15 +24,16 @@ OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 Z = [-1.644854, -0.674490, 0.0, 0.674490, 1.644854]
 BASE_SIGMA = 0.0025
+# Cap sigma so wild markets never get overconfident and widen spreads unboundedly.
 MAX_SIGMA = 0.012
 
 
-def clamp6(x: float) -> float:
+def clamp01_6(x: float) -> float:
     v = round(min(1.0, max(0.0, x)) * 1e6) / 1e6
     return v + 0.0
 
 
-def estimate_sigma(prices) -> float:
+def ewma_sigma(prices) -> float:
     # minute-to-minute absolute changes, recent 4 hours weighted more
     n = len(prices)
     if n < 30:
@@ -52,9 +55,9 @@ def estimate_sigma(prices) -> float:
     return max(BASE_SIGMA, min(MAX_SIGMA, sigma))
 
 
-def forecast(prices, horizon: int):
+def forecast_market(prices, horizon: int):
     x = prices[-1]
-    sigma = estimate_sigma(prices)
+    sigma = ewma_sigma(prices)
     # weak pullback target: 60-minute mean, only if price deviated a lot
     recent = prices[-60:]
     mean60 = sum(recent) / len(recent)
@@ -65,7 +68,7 @@ def forecast(prices, horizon: int):
     rows = []
     for h in range(1, horizon + 1):
         base = x + pull * min(1.0, h / 60.0)
-        rows.append([clamp6(base + z * sigma * math.sqrt(h)) for z in Z])
+        rows.append([clamp01_6(base + z * sigma * math.sqrt(h)) for z in Z])
     return rows
 
 
@@ -77,7 +80,7 @@ def main() -> None:
         case = json.loads(f.read_text())
         horizon = case["horizon_minutes"]
         forecasts = [
-            {"id": m["id"], "q": forecast(m["prices"], horizon)}
+            {"id": m["id"], "q": forecast_market(m["prices"], horizon)}
             for m in case["markets"]
         ]
         out = OUTPUT_DIR / (f.stem + ".out")
